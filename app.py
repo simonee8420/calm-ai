@@ -1,6 +1,7 @@
 import streamlit as st
 import openai
 import anthropic
+import google.generativeai as genai
 from textblob import TextBlob
 import time
 import os
@@ -176,25 +177,41 @@ Sentiment score: {sentiment:.2f} (range -1.0 very negative to +1.0 very positive
 Respond accordingly with appropriate warmth and therapeutic framing."""
 
 def get_ai_response(user_message: str, emotion: str, sentiment: float, history: list) -> str:
-    api_key = os.getenv("OPENAI_API_KEY") or st.session_state.get("openai_key", "")
+    gemini_key  = os.getenv("GEMINI_API_KEY")  or st.session_state.get("gemini_key", "")
+    openai_key  = os.getenv("OPENAI_API_KEY")  or st.session_state.get("openai_key", "")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY") or st.session_state.get("anthropic_key", "")
 
     system = SYSTEM_PROMPT.format(emotion=emotion, sentiment=sentiment)
 
-    if api_key:
-        client = openai.OpenAI(api_key=api_key)
+    # ── Gemini (free) ──────────────────────────────────────────────────────────
+    if gemini_key:
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=system,
+        )
+        # Build history for Gemini format
+        gemini_history = []
+        for m in history[-8:]:
+            role = "user" if m["role"] == "user" else "model"
+            gemini_history.append({"role": role, "parts": [m["content"]]})
+        chat = model.start_chat(history=gemini_history)
+        response = chat.send_message(user_message)
+        return response.text
+
+    # ── OpenAI ─────────────────────────────────────────────────────────────────
+    elif openai_key:
+        client = openai.OpenAI(api_key=openai_key)
         messages = [{"role": "system", "content": system}]
         for m in history[-8:]:
             messages.append({"role": m["role"], "content": m["content"]})
         messages.append({"role": "user", "content": user_message})
         response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            max_tokens=500,
-            temperature=0.8,
+            model="gpt-4o", messages=messages, max_tokens=500, temperature=0.8,
         )
         return response.choices[0].message.content
 
+    # ── Anthropic ──────────────────────────────────────────────────────────────
     elif anthropic_key:
         client = anthropic.Anthropic(api_key=anthropic_key)
         msgs = []
@@ -202,16 +219,14 @@ def get_ai_response(user_message: str, emotion: str, sentiment: float, history: 
             msgs.append({"role": m["role"], "content": m["content"]})
         msgs.append({"role": "user", "content": user_message})
         response = client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=500,
-            system=system,
-            messages=msgs,
+            model="claude-opus-4-5", max_tokens=500, system=system, messages=msgs,
         )
         return response.content[0].text
+
     else:
         return (
-            "I'm here to listen. However, it seems no API key has been configured. "
-            "Please add your OpenAI or Anthropic API key in the sidebar to begin our session."
+            "I'm here to listen. It looks like no API key has been configured yet. "
+            "Please add your Google Gemini API key in the settings above to begin our session."
         )
 
 # ── Map emotion → therapist mood ───────────────────────────────────────────────
@@ -272,16 +287,24 @@ with col_chat:
 
     # Sidebar API key input via expander
     with st.expander("⚙️ Configure API Key", expanded=not st.session_state.session_active):
-        api_choice = st.radio("Choose AI backend", ["OpenAI (GPT-4o)", "Anthropic (Claude)"], horizontal=True)
-        if api_choice == "OpenAI (GPT-4o)":
+        api_choice = st.radio("Choose AI backend", ["Google Gemini (Free ✓)", "OpenAI (GPT-4o)", "Anthropic (Claude)"], horizontal=True)
+        if api_choice == "Google Gemini (Free ✓)":
+            key = st.text_input("Gemini API Key", type="password", placeholder="AIza...")
+            if key:
+                st.session_state.gemini_key = key
+                st.session_state.pop("openai_key", None)
+                st.session_state.pop("anthropic_key", None)
+        elif api_choice == "OpenAI (GPT-4o)":
             key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
             if key:
                 st.session_state.openai_key = key
+                st.session_state.pop("gemini_key", None)
                 st.session_state.pop("anthropic_key", None)
         else:
             key = st.text_input("Anthropic API Key", type="password", placeholder="sk-ant-...")
             if key:
                 st.session_state.anthropic_key = key
+                st.session_state.pop("gemini_key", None)
                 st.session_state.pop("openai_key", None)
 
     st.markdown('<div class="chat-header"><h2>Your Session with Dr. CALM</h2><p>Everything you share is confidential. I\'m here to help you work through whatever\'s on your mind.</p></div>', unsafe_allow_html=True)
